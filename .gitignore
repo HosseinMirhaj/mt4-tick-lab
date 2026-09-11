@@ -1,0 +1,11 @@
+﻿data/
+reports/
+inventory/
+*.csv
+*.hst
+*.fxt
+*.log
+*.set
+.env
+*password*
+*credential*
