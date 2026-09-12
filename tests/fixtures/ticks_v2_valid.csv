@@ -1,0 +1,3 @@
+schema_version,session_id,sequence,broker_time,received_utc,monotonic_us,bid,ask,last,volume,spread_points,raw_tick_bid,raw_tick_ask,market_bid,market_ask,quote_source
+2,test_v2,1,2026-09-12T10:00:00,2026-09-12T08:00:00Z,1000000,2500.10,2500.30,0.00,0,20.00,2500.10,2500.10,2500.10,2500.30,market_info
+2,test_v2,2,2026-09-12T10:00:01,2026-09-12T08:00:01Z,2000000,2500.20,2500.40,0.00,0,20.00,2500.20,2500.20,2500.20,2500.40,market_info

@@ -1,6 +1,6 @@
 #property copyright "MT4 Tick Lab contributors"
 #property link      "https://github.com/HosseinMirhaj/mt4-tick-lab"
-#property version   "1.000"
+#property version   "1.100"
 #property strict
 #property indicator_chart_window
 #property indicator_buffers 0
@@ -102,7 +102,7 @@ void WriteMetadata(string folder)
    }
 
    FileWrite(handle, "key", "value");
-   FileWrite(handle, "schema_version", "1");
+   FileWrite(handle, "schema_version", "2");
    FileWrite(handle, "session_id", g_session_id);
    FileWrite(handle, "broker_company", AccountInfoString(ACCOUNT_COMPANY));
    FileWrite(handle, "broker_server", AccountInfoString(ACCOUNT_SERVER));
@@ -120,6 +120,8 @@ void WriteMetadata(string folder)
    FileWrite(handle, "volume_min", DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN), 4));
    FileWrite(handle, "volume_step", DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP), 4));
    FileWrite(handle, "volume_max", DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX), 4));
+   FileWrite(handle, "collector_version", "1.100");
+   FileWrite(handle, "price_policy", "prefer_marketinfo_when_valid");
    FileWrite(handle, "collector_started_utc", IsoTime(TimeGMT()) + "Z");
    FileFlush(handle);
    FileClose(handle);
@@ -154,7 +156,9 @@ bool OpenTickFile(datetime received_utc)
    if(FileSize(g_file) == 0)
       FileWrite(g_file, "schema_version", "session_id", "sequence",
                 "broker_time", "received_utc", "monotonic_us",
-                "bid", "ask", "last", "volume", "spread_points");
+                "bid", "ask", "last", "volume", "spread_points",
+                "raw_tick_bid", "raw_tick_ask",
+                "market_bid", "market_ask", "quote_source");
    else
       FileSeek(g_file, 0, SEEK_END);
 
@@ -248,21 +252,38 @@ int OnCalculate(const int rates_total,
 
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   double spread_points = point > 0.0 ? (tick.ask - tick.bid) / point : 0.0;
+   double market_bid = MarketInfo(_Symbol, MODE_BID);
+   double market_ask = MarketInfo(_Symbol, MODE_ASK);
+   bool market_valid = (market_bid > 0.0 && market_ask >= market_bid);
+   bool raw_valid = (tick.bid > 0.0 && tick.ask >= tick.bid);
+
+   double selected_bid = market_valid ? market_bid : tick.bid;
+   double selected_ask = market_valid ? market_ask : tick.ask;
+   string quote_source = market_valid ? "market_info" : "mql_tick";
+   if(!market_valid && !raw_valid) return rates_total;
+
+   double spread_points = point > 0.0
+                          ? (selected_ask - selected_bid) / point
+                          : 0.0;
 
    g_sequence++;
    FileWrite(g_file,
-             "1",
+             "2",
              g_session_id,
              (long)g_sequence,
              IsoTime(tick.time),
              IsoTime(received_utc) + "Z",
              (long)GetMicrosecondCount(),
-             DoubleToString(tick.bid, digits),
-             DoubleToString(tick.ask, digits),
+             DoubleToString(selected_bid, digits),
+             DoubleToString(selected_ask, digits),
              DoubleToString(tick.last, digits),
              (long)tick.volume,
-             DoubleToString(spread_points, 2));
+             DoubleToString(spread_points, 2),
+             DoubleToString(tick.bid, digits),
+             DoubleToString(tick.ask, digits),
+             DoubleToString(market_bid, digits),
+             DoubleToString(market_ask, digits),
+             quote_source);
 
    g_unflushed++;
    if(FlushEveryTicks > 0 && g_unflushed >= FlushEveryTicks)

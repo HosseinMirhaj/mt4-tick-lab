@@ -40,8 +40,10 @@ def validate_file(path: Path) -> dict:
         "sequence_gaps": 0, "sequence_regressions": 0,
         "received_time_regressions": 0, "broker_time_regressions": 0,
         "invalid_rows": 0, "invalid_quotes": 0,
+        "zero_spread_rows": 0, "zero_spread_percent": 0.0,
+        "quote_source_counts": {}, "raw_market_disagreements": 0,
         "min_spread_points": None, "max_spread_points": None,
-        "issues": [],
+        "issues": [], "warnings": [],
     }
     last_sequence: dict[str, int] = {}
     last_received: dict[str, datetime] = {}
@@ -49,6 +51,7 @@ def validate_file(path: Path) -> dict:
     spread_min = math.inf
     spread_max = -math.inf
     session_rows: defaultdict[str, int] = defaultdict(int)
+    source_counts: defaultdict[str, int] = defaultdict(int)
 
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as stream:
@@ -61,7 +64,8 @@ def validate_file(path: Path) -> dict:
             for line_number, row in enumerate(reader, start=2):
                 result["rows"] += 1
                 try:
-                    if row["schema_version"] != "1":
+                    schema_version = row["schema_version"]
+                    if schema_version not in {"1", "2"}:
                         raise ValueError("unsupported schema_version")
                     session = row["session_id"].strip()
                     if not session:
@@ -104,13 +108,38 @@ def validate_file(path: Path) -> dict:
 
                 if not all(map(math.isfinite, (bid, ask, spread))) or bid <= 0 or ask <= 0 or ask < bid:
                     result["invalid_quotes"] += 1
+                if spread == 0.0:
+                    result["zero_spread_rows"] += 1
+
+                if schema_version == "2":
+                    source = row.get("quote_source", "").strip() or "unknown"
+                    source_counts[source] += 1
+                    try:
+                        raw_bid = float(row["raw_tick_bid"])
+                        raw_ask = float(row["raw_tick_ask"])
+                        market_bid = float(row["market_bid"])
+                        market_ask = float(row["market_ask"])
+                        if raw_bid != market_bid or raw_ask != market_ask:
+                            result["raw_market_disagreements"] += 1
+                    except (KeyError, TypeError, ValueError):
+                        result["invalid_rows"] += 1
+
                 spread_min = min(spread_min, spread)
                 spread_max = max(spread_max, spread)
     except (OSError, csv.Error) as exc:
         result["issues"].append(str(exc))
 
     result["sessions"] = len(session_rows)
-    if result["rows"] == 0:
+    result["quote_source_counts"] = dict(sorted(source_counts.items()))
+    if result["rows"]:
+        result["zero_spread_percent"] = round(
+            100.0 * result["zero_spread_rows"] / result["rows"], 2
+        )
+        if result["zero_spread_percent"] >= 95.0:
+            result["warnings"].append(
+                "at least 95% of rows have zero spread; verify broker feed and quote source"
+            )
+    else:
         result["issues"].append("file contains no tick rows")
     if spread_min != math.inf:
         result["min_spread_points"] = spread_min
@@ -146,7 +175,13 @@ def main() -> int:
     }
 
     for report in reports:
-        print(f"{report['status']:4}  rows={report['rows']:8}  gaps={report['sequence_gaps']:6}  {report['file']}")
+        print(
+            f"{report['status']:4}  rows={report['rows']:8}  "
+            f"gaps={report['sequence_gaps']:6}  "
+            f"zero_spread={report['zero_spread_percent']:6.2f}%  {report['file']}"
+        )
+        for warning in report["warnings"]:
+            print(f"WARN  {warning}")
     print(f"Summary: {summary['status']} | files={summary['files']} | rows={summary['rows']} | failed={summary['failed_files']}")
 
     if args.json_path:
