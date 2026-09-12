@@ -9,3 +9,6 @@ inventory/
 .env
 *password*
 *credential*
+*.ex4
+*.zip
+__pycache__/
