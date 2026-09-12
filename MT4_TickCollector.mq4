@@ -8,6 +8,7 @@
 input string OutputRoot             = "MT4TickLab";
 input bool   UseCommonFilesFolder    = false;
 input bool   IncludeAccountLogin     = false;
+input bool   RequireConnectedAccount = true;
 input int    FlushEveryTicks         = 100;
 
 int    g_file = INVALID_HANDLE;
@@ -68,6 +69,37 @@ int FileFlags(bool write_only = false)
    return flags;
 }
 
+bool EnsureFolderPath(string path)
+{
+   StringReplace(path, "/", "\\");
+   string current = "";
+   int start = 0;
+   int common_flag = UseCommonFilesFolder ? FILE_COMMON : 0;
+
+   while(start < StringLen(path))
+   {
+      int separator = StringFind(path, "\\", start);
+      string part = separator < 0
+                    ? StringSubstr(path, start)
+                    : StringSubstr(path, start, separator - start);
+      start = separator < 0 ? StringLen(path) : separator + 1;
+      if(StringLen(part) == 0) continue;
+
+      current = StringLen(current) == 0 ? part : current + "\\" + part;
+      if(!FolderIsExist(current, common_flag))
+      {
+         ResetLastError();
+         if(!FolderCreate(current, common_flag))
+         {
+            Print("MT4 Tick Lab: cannot create folder ", current,
+                  ". Error=", GetLastError());
+            return false;
+         }
+      }
+   }
+   return true;
+}
+
 void WriteMetadata(string folder)
 {
    string path = folder + "\\metadata_" + g_session_id + ".csv";
@@ -117,6 +149,8 @@ bool OpenTickFile(datetime received_utc)
    string folder = g_base_path + "\\" + year + "\\" + month;
    string path = folder + "\\ticks_" + g_day_key + "_" + g_session_id + ".csv";
 
+   if(!EnsureFolderPath(folder)) return false;
+
    ResetLastError();
    g_file = FileOpen(path, FileFlags(false), ',');
    if(g_file == INVALID_HANDLE)
@@ -144,6 +178,14 @@ int OnInit()
    if(MQLInfoInteger(MQL_TESTER))
    {
       Print("MT4 Tick Lab: collector is disabled in Strategy Tester.");
+      return INIT_FAILED;
+   }
+
+   if(RequireConnectedAccount &&
+      (!TerminalInfoInteger(TERMINAL_CONNECTED) ||
+       StringLen(AccountInfoString(ACCOUNT_SERVER)) == 0))
+   {
+      Print("MT4 Tick Lab: connect this terminal to the broker before attaching the collector.");
       return INIT_FAILED;
    }
 

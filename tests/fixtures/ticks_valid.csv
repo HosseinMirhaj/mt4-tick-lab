@@ -1,0 +1,4 @@
+schema_version,session_id,sequence,broker_time,received_utc,monotonic_us,bid,ask,last,volume,spread_points
+1,test_session,1,2026-09-12T10:00:00,2026-09-12T08:00:00Z,1000000,2500.10,2500.30,0.00,0,20.00
+1,test_session,2,2026-09-12T10:00:00,2026-09-12T08:00:00Z,1000150,2500.11,2500.31,0.00,0,20.00
+1,test_session,3,2026-09-12T10:00:01,2026-09-12T08:00:01Z,2000100,2500.12,2500.32,0.00,0,20.00

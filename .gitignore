@@ -2,6 +2,7 @@
 reports/
 inventory/
 *.csv
+!tests/fixtures/*.csv
 *.hst
 *.fxt
 *.log
