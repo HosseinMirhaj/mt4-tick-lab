@@ -1,6 +1,6 @@
 #property copyright "MT4 Tick Lab contributors"
 #property link      "https://github.com/HosseinMirhaj/mt4-tick-lab"
-#property version   "0.10"
+#property version   "1.000"
 #property strict
 #property indicator_chart_window
 #property indicator_buffers 0
@@ -69,7 +69,7 @@ int FileFlags(bool write_only = false)
    return flags;
 }
 
-bool EnsureFolderPath(string path)
+void EnsureFolderPath(string path)
 {
    StringReplace(path, "/", "\\");
    string current = "";
@@ -86,18 +86,9 @@ bool EnsureFolderPath(string path)
       if(StringLen(part) == 0) continue;
 
       current = StringLen(current) == 0 ? part : current + "\\" + part;
-      if(!FolderIsExist(current, common_flag))
-      {
-         ResetLastError();
-         if(!FolderCreate(current, common_flag))
-         {
-            Print("MT4 Tick Lab: cannot create folder ", current,
-                  ". Error=", GetLastError());
-            return false;
-         }
-      }
+      ResetLastError();
+      FolderCreate(current, common_flag);
    }
-   return true;
 }
 
 void WriteMetadata(string folder)
@@ -149,7 +140,7 @@ bool OpenTickFile(datetime received_utc)
    string folder = g_base_path + "\\" + year + "\\" + month;
    string path = folder + "\\ticks_" + g_day_key + "_" + g_session_id + ".csv";
 
-   if(!EnsureFolderPath(folder)) return false;
+   EnsureFolderPath(folder);
 
    ResetLastError();
    g_file = FileOpen(path, FileFlags(false), ',');
