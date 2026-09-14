@@ -1,6 +1,7 @@
 ﻿data/
 datasets/
 bars/
+hst/
 reports/
 inventory/
 *.csv
