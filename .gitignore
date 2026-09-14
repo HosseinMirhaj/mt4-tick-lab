@@ -1,4 +1,5 @@
 ﻿data/
+datasets/
 reports/
 inventory/
 *.csv
