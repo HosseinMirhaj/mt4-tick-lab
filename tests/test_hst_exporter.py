@@ -43,18 +43,20 @@ class HstExporterTests(unittest.TestCase):
                  "tick_volume": "5", "spread_close": "10.00"},
             ])
             completed = subprocess.run(
-                [sys.executable, str(EXPORTER), str(source), "--output", str(output)],
+                [sys.executable, str(EXPORTER), str(source), "--output", str(output),
+                 "--symbol", "GOLD"],
                 text=True, capture_output=True, check=False,
             )
             self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
             files = list(output.rglob("*.hst"))
             self.assertEqual(len(files), 1)
+            self.assertEqual(files[0].name, "GOLD1.hst")
             payload = files[0].read_bytes()
             self.assertEqual(len(payload), 148 + 2 * 60)
 
             header = HEADER.unpack_from(payload)
             self.assertEqual(header[0], 401)
-            self.assertEqual(header[2].rstrip(b"\0"), b"XAUUSD")
+            self.assertEqual(header[2].rstrip(b"\0"), b"GOLD")
             self.assertEqual(header[3], 1)
             self.assertEqual(header[4], 2)
 

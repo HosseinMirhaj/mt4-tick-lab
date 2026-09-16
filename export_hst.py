@@ -122,8 +122,10 @@ def read_bar_file(path: Path) -> tuple[tuple[str, str, str, str], list[tuple], i
 
 
 def export_group(identity: tuple[str, str, str, str], records: list[tuple],
-                 digits: int, output: Path) -> tuple[Path, int]:
-    company, server, terminal, symbol = identity
+                 digits: int, output: Path,
+                 tester_symbol: str | None = None) -> tuple[Path, int]:
+    company, server, terminal, source_symbol = identity
+    symbol = tester_symbol or source_symbol
     try:
         symbol_bytes = symbol.encode("ascii", "strict")
     except UnicodeEncodeError as exc:
@@ -159,6 +161,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Export M1 bars to offline MT4 HST v401")
     parser.add_argument("targets", nargs="+", help="bars_M1 CSV files or directories")
     parser.add_argument("--output", required=True, help="offline HST output directory")
+    parser.add_argument("--symbol", default=None,
+                        help="offline/tester symbol name; only valid for one source identity")
     args = parser.parse_args()
     paths = discover(args.targets)
     if not paths:
@@ -172,10 +176,13 @@ def main() -> int:
             identity, records, digits = read_bar_file(path)
             grouped[identity].extend(records)
             precisions[identity] = max(precisions.get(identity, 0), digits)
+        if args.symbol and len(grouped) != 1:
+            raise ValueError("--symbol requires exactly one source identity")
         output = Path(args.output).resolve()
         total_bars = 0
         for identity, records in grouped.items():
-            _, count = export_group(identity, records, precisions[identity], output)
+            _, count = export_group(identity, records, precisions[identity], output,
+                                    args.symbol)
             total_bars += count
         print(f"PASS | bars={total_bars} | HST_files={len(grouped)} | version=401")
         return 0
