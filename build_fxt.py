@@ -124,8 +124,10 @@ def patch_header(template: bytes, spec: dict[str, str], ticks: list[dict],
 
     header[68:196] = ascii_field(spec["broker_server"], 128, "broker_server")
     header[196:208] = ascii_field(tester_symbol, 12, "tester_symbol")
+    # MT4 leaves the trailing slot of this block at 0 in its own v405 files,
+    # even when the file holds ~92M tick records. It is not a tick counter.
     struct.pack_into("<iiiiii", header, 208, 1, 0, bars,
-                     ticks[0]["timestamp"], ticks[-1]["timestamp"], len(ticks))
+                     ticks[0]["timestamp"], ticks[-1]["timestamp"], 0)
     struct.pack_into("<d", header, 232, 99.9)
     header[240:252] = ascii_field(spec["account_currency"], 12, "account_currency")
     struct.pack_into("<ii", header, 252, fixed_spread, integer("digits"))

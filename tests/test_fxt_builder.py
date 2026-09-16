@@ -80,6 +80,7 @@ class FxtBuilderTests(unittest.TestCase):
             self.assertEqual(payload[68:196].split(b"\0", 1)[0], b"Alpari-Pro.ECN-Demo")
             self.assertEqual(payload[196:208].split(b"\0", 1)[0], b"GOLD")
             self.assertEqual(struct.unpack_from("<iiiiii", payload, 208)[0:3], (1, 0, 2))
+            self.assertEqual(struct.unpack_from("<iiiiii", payload, 208)[5], 0)
             self.assertEqual(struct.unpack_from("<ii", payload, 252), (10, 2))
             self.assertEqual(struct.unpack_from("<d", payload, 264)[0], 0.01)
 
