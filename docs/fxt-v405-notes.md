@@ -32,16 +32,28 @@ After the last run `tester\history\GOLD1_0.fxt` was **0 bytes**: MT4 truncated t
 hand-built FXT and tried to rebuild it from M1 history, then stopped.
 The tester-only EA never ran, so no result file was produced.
 
-## Cause hypothesis
+## Root cause (confirmed)
 
-The pilot contained only 91 M1 bars covering 2026-09-14 18:34 → 20:43, while the
-requested test range was a whole day or more. MT4 refuses a range the M1 history
-does not span and reports `deficient data` with the M1 record count it found.
-The zero-byte FXT is a side effect of that rebuild, not the root cause.
+**MT4 refuses to start a test with fewer than 100 bars of M1 history.**
+The number in the message is the bar count it found, so `(91 rate records)` means
+91 of the required 100. Our pilot covers 2026-09-14 18:34 → 20:43 = 91 M1 bars.
+MT4 read `GOLD1.hst` and reported its exact bar count. It then truncated
+`GOLD1_0.fxt` to 0 bytes before the tester-only EA could run, so no result CSV
+appeared. This failure confirms the HST is found, **not** that the FXT layout has
+been accepted; the FXT still requires a separate successful smoke test.
 
-Next experiment: restrict the tester range to **exactly** the window the data covers,
-including the time of day (`2026.09.14 18:34` → `2026.09.14 20:43`), which is what
-`deficient data (91 rate records)` points at.
+Source: <https://www.mql5.com/en/articles/1417>
+
+The tester's date fields accept a **date only** — no time of day — so narrowing the
+range cannot work around the 100-bar minimum.
+
+### Fix
+
+Collect a longer continuous tick session. 100 bars is the hard floor; MT4 also wants
+bars *preceding* the start date for indicator warm-up, so aim well above it.
+A single uninterrupted session of ~4 hours yields ~240 M1 bars and clears the
+threshold with margin. No synthetic or padded bars — the project requires that every
+bar come from real broker ticks.
 
 ## Safety
 
