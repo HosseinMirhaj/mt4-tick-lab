@@ -18,7 +18,7 @@ Findings from building and testing an offline MT4 Build 1470 test bed.
   symbol names differ per broker, so `XAUUSD` on one server is `GOLD` on another.
   `--symbol` on the exporters renames the artifact instead of copying broker databases.
 
-## Symptom log (unresolved)
+## Symptom log
 
 Running the tester on a hand-built pilot produced, in order:
 
@@ -36,11 +36,9 @@ The tester-only EA never ran, so no result file was produced.
 
 **MT4 refuses to start a test with fewer than 100 bars of M1 history.**
 The number in the message is the bar count it found, so `(91 rate records)` means
-91 of the required 100. Our pilot covers 2026-09-14 18:34 → 20:43 = 91 M1 bars.
-MT4 read `GOLD1.hst` and reported its exact bar count. It then truncated
-`GOLD1_0.fxt` to 0 bytes before the tester-only EA could run, so no result CSV
-appeared. This failure confirms the HST is found, **not** that the FXT layout has
-been accepted; the FXT still requires a separate successful smoke test.
+91 of the required 100. Our pilot covered 2026-09-14 18:34 → 20:43 = 91 M1 bars.
+MT4 read `GOLD1.hst` and reported its exact bar count, then truncated
+`GOLD1_0.fxt` to 0 bytes before the tester-only EA could run.
 
 Source: <https://www.mql5.com/en/articles/1417>
 
@@ -51,9 +49,52 @@ range cannot work around the 100-bar minimum.
 
 Collect a longer continuous tick session. 100 bars is the hard floor; MT4 also wants
 bars *preceding* the start date for indicator warm-up, so aim well above it.
-A single uninterrupted session of ~4 hours yields ~240 M1 bars and clears the
-threshold with margin. No synthetic or padded bars — the project requires that every
-bar come from real broker ticks.
+A single uninterrupted session of several hours clears the threshold with margin.
+No synthetic or padded bars — every bar must come from real broker ticks.
+
+## First successful smoke test (2026-09-18)
+
+270 real M1 bars over 32,860 ticks cleared the threshold and the tester ran:
+
+```
+TestGenerator: spread set to 11
+TestGenerator: no connect to trade server, default environment will be applied
+GOLD,M1: 20577 tick events (170 bars, 20677 bar states) processed
+MT4 Tick Lab FXT smoke result: ticks=20577 first=2026.09.18 10:55:00 orders=0
+```
+
+The EA ran on real ticks and placed no orders. Confirmed from this run:
+
+* The FXT layout is accepted; the header's fixed spread reaches the tester.
+* A FXT tick record's inner time field is **4 bytes, not 8**. Writing 8 bytes makes
+  MT4 read a truncated value, which is why the EA reported `last=1993.06.22` while
+  the 8-byte **bar** time stayed correct. Only the bar time drives the test range.
+* The tick count the tester processed (20,577) is lower than the file's record count
+  (32,860) because only the part of the range covered by the imported history is fed
+  to the EA. Match the tester date range to the data before judging coverage.
+* The offline terminal runs at GMT+3, so broker wall-clock times near the end of a
+  broker day land on the next calendar day. This affects the range to select.
+
+### Open issue
+
+`build_fxt.py` still writes an 8-byte inner tick time. The test passes, but the field
+is malformed and must be narrowed to 4 bytes before any result that depends on
+intra-bar timing is trusted.
+
+## Other facts worth keeping
+
+* The official FXT documentation lists record OHLC as **open, low, high, close**,
+  but reverse-engineered layouts and this working test both show the real byte order
+  is **open, high, low, close**. Follow the bytes, not the doc.
+* MT4 ignores extra copies of `<SYMBOL>1.hst` outside the active server folder. When
+  the active server folder is unknown, distribute the HST to every folder under
+  `history\` rather than guessing.
+* An offline terminal launched with `/portable` still reports
+  `no connect to trade server, default environment will be applied`; that is expected
+  and does not block a test.
+
+Sources: <https://www.metatrader4.com/en/trading-platform/help/autotrading/tester/tester_fxt>,
+<https://github.com/adyzng/go-duka>, <https://github.com/EA31337/MT-Formats>
 
 ## Safety
 
