@@ -66,20 +66,42 @@ MT4 Tick Lab FXT smoke result: ticks=20577 first=2026.09.18 10:55:00 orders=0
 The EA ran on real ticks and placed no orders. Confirmed from this run:
 
 * The FXT layout is accepted; the header's fixed spread reaches the tester.
-* A FXT tick record's inner time field is **4 bytes, not 8**. Writing 8 bytes makes
-  MT4 read a truncated value, which is why the EA reported `last=1993.06.22` while
-  the 8-byte **bar** time stayed correct. Only the bar time drives the test range.
 * The tick count the tester processed (20,577) is lower than the file's record count
   (32,860) because only the part of the range covered by the imported history is fed
   to the EA. Match the tester date range to the data before judging coverage.
 * The offline terminal runs at GMT+3, so broker wall-clock times near the end of a
   broker day land on the next calendar day. This affects the range to select.
 
-### Open issue
+## The `last=1993.06.22` reading: file proven correct, cause NOT isolated
 
-`build_fxt.py` still writes an 8-byte inner tick time. The test passes, but the field
-is malformed and must be narrowed to 4 bytes before any result that depends on
-intra-bar timing is trusted.
+The first smoke run reported `first=2026.09.18 10:55:00 last=1993.06.22 05:34:26`.
+
+**What is proven:** the FXT is not at fault. Byte-level comparison against the broker's
+own reference FXT shows `build_fxt.py` writes the documented 56-byte layout; bytes 48–51
+hold a valid 4-byte tick time (`1789694136` = 2026-09-18 01:15:36 UTC) and bytes 52–55
+hold the flag `4`. Both files agree structurally. The bad value `1993.06.22 05:34:26` is
+epoch 740,727,266, which has no relation to any value in the imported data.
+
+**What is NOT proven:** why the EA read that value. An earlier revision of this note
+blamed `RefreshRates()` plus `TimeCurrent()` at teardown and stated it as fact. That was
+an unverified hypothesis: the revision of the EA that produced the number is not in the
+repository, the mechanism cannot be demonstrated from the surviving evidence, and the
+workaround changed three things at once, so nothing was isolated. Treat the cause as
+unknown rather than settled.
+
+**What is certain about the fix:** `MT4_FXT_SmokeTest.mq4` now reads the per-tick stamp
+from `MqlTick.time`, ignores non-increasing stamps, and writes its result in `OnTester()`
+instead of `OnDeinit()`. Independently of the original cause, sampling state in
+`OnDeinit()` is unsafe: `OnTester()` runs immediately before it, the tester fires a
+dedicated event after history testing ends, and `OnDeinit()` is force-terminated after
+2.5 seconds.
+
+If this ever needs settling, bisect it: keep the old EA revision in the repo and re-run
+the same FXT with only the `OnTester()` change, then with only the monotonicity guard.
+
+General API references (they document behaviour, not this incident):
+<https://docs.mql4.com/dateandtime/timecurrent>,
+<https://docs.mql4.com/basis/function/events>
 
 ## Other facts worth keeping
 

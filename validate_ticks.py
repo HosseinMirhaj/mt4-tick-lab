@@ -42,6 +42,7 @@ def validate_file(path: Path) -> dict:
         "invalid_rows": 0, "invalid_quotes": 0,
         "zero_spread_rows": 0, "zero_spread_percent": 0.0,
         "quote_source_counts": {}, "raw_market_disagreements": 0,
+        "identical_quote_sources": 0, "partial_quote_source_rows": 0,
         "min_spread_points": None, "max_spread_points": None,
         "issues": [], "warnings": [],
     }
@@ -115,12 +116,22 @@ def validate_file(path: Path) -> dict:
                     source = row.get("quote_source", "").strip() or "unknown"
                     source_counts[source] += 1
                     try:
-                        raw_bid = float(row["raw_tick_bid"])
-                        raw_ask = float(row["raw_tick_ask"])
-                        market_bid = float(row["market_bid"])
-                        market_ask = float(row["market_ask"])
-                        if raw_bid != market_bid or raw_ask != market_ask:
-                            result["raw_market_disagreements"] += 1
+                        values = {}
+                        for field in ("raw_tick_bid", "raw_tick_ask",
+                                      "market_bid", "market_ask"):
+                            text = (row.get(field) or "").strip()
+                            values[field] = float(text) if text else None
+                        if all(value is not None for value in values.values()):
+                            raw_bid = values["raw_tick_bid"]
+                            raw_ask = values["raw_tick_ask"]
+                            market_bid = values["market_bid"]
+                            market_ask = values["market_ask"]
+                            if raw_bid != market_bid or raw_ask != market_ask:
+                                result["raw_market_disagreements"] += 1
+                            else:
+                                result["identical_quote_sources"] += 1
+                        else:
+                            result["partial_quote_source_rows"] += 1
                     except (KeyError, TypeError, ValueError):
                         result["invalid_rows"] += 1
 

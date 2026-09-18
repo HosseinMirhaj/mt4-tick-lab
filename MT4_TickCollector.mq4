@@ -1,6 +1,6 @@
 #property copyright "MT4 Tick Lab contributors"
 #property link      "https://github.com/HosseinMirhaj/mt4-tick-lab"
-#property version   "1.100"
+#property version   "1.200"
 #property strict
 #property indicator_chart_window
 #property indicator_buffers 0
@@ -8,7 +8,7 @@
 input string OutputRoot             = "MT4TickLab";
 input bool   UseCommonFilesFolder    = false;
 input bool   IncludeAccountLogin     = false;
-input bool   RequireConnectedAccount = true;
+input bool   RequireConnectedAccount = false;
 input int    FlushEveryTicks         = 100;
 
 int    g_file = INVALID_HANDLE;
@@ -19,6 +19,10 @@ string g_base_path;
 ulong  g_sequence = 0;
 int    g_unflushed = 0;
 bool   g_skip_initial_snapshot = true;
+long   g_open_failures = 0;
+long   g_reopen_attempts = 0;
+datetime g_last_open_attempt = 0;
+datetime g_last_heartbeat = 0;
 
 string SafeName(string value)
 {
@@ -87,17 +91,31 @@ void EnsureFolderPath(string path)
 
       current = StringLen(current) == 0 ? part : current + "\\" + part;
       ResetLastError();
-      FolderCreate(current, common_flag);
+      if(!FolderCreate(current, common_flag))
+         Print("MT4 Tick Lab: folder create failed. Path=", current,
+               " Error=", GetLastError());
    }
 }
 
-void WriteMetadata(string folder)
+void WriteMetadata(string folder, bool append_rollover_row = false)
 {
    string path = folder + "\\metadata_" + g_session_id + ".csv";
-   int handle = FileOpen(path, FileFlags(true), ',');
+   int handle = FileOpen(path, append_rollover_row ? FileFlags(false) : FileFlags(true), ',');
    if(handle == INVALID_HANDLE)
    {
       Print("MT4 Tick Lab: metadata open failed. Error=", GetLastError());
+      return;
+   }
+
+   if(append_rollover_row)
+   {
+      // The same collector session can span broker days. Keep every day's file
+      // self-describing instead of silently overwriting the first day's metadata.
+      FileSeek(handle, 0, SEEK_END);
+      FileWrite(handle, "rollover_day", g_day_key);
+      FileWrite(handle, "rollover_started_utc", IsoTime(TimeGMT()) + "Z");
+      FileFlush(handle);
+      FileClose(handle);
       return;
    }
 
@@ -120,8 +138,9 @@ void WriteMetadata(string folder)
    FileWrite(handle, "volume_min", DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN), 4));
    FileWrite(handle, "volume_step", DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP), 4));
    FileWrite(handle, "volume_max", DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX), 4));
-   FileWrite(handle, "collector_version", "1.100");
-   FileWrite(handle, "price_policy", "prefer_marketinfo_when_valid");
+   FileWrite(handle, "collector_version", "1.200");
+   FileWrite(handle, "price_policy", "record_both_marketinfo_primary");
+   FileWrite(handle, "broker_time_zone", "broker_server_time_unmarked");
    FileWrite(handle, "collector_started_utc", IsoTime(TimeGMT()) + "Z");
    FileFlush(handle);
    FileClose(handle);
@@ -129,6 +148,8 @@ void WriteMetadata(string folder)
 
 bool OpenTickFile(datetime received_utc)
 {
+   bool rollover = (g_file != INVALID_HANDLE && DateKey(received_utc) != g_day_key);
+
    if(g_file != INVALID_HANDLE)
    {
       FileFlush(g_file);
@@ -148,8 +169,10 @@ bool OpenTickFile(datetime received_utc)
    g_file = FileOpen(path, FileFlags(false), ',');
    if(g_file == INVALID_HANDLE)
    {
-      Print("MT4 Tick Lab: tick file open failed. Path=", path,
-            " Error=", GetLastError());
+      g_open_failures++;
+      Print("MT4 Tick Lab: tick file open failed (#", g_open_failures,
+            "). Path=", path, " Error=", GetLastError(),
+            " Retrying every 15s. No ticks are being recorded until it succeeds.");
       return false;
    }
 
@@ -162,9 +185,10 @@ bool OpenTickFile(datetime received_utc)
    else
       FileSeek(g_file, 0, SEEK_END);
 
-   WriteMetadata(folder);
+   WriteMetadata(folder, rollover);
    FileFlush(g_file);
-   Print("MT4 Tick Lab: recording ", _Symbol, " to ", path);
+   Print("MT4 Tick Lab: recording ", _Symbol, " to ", path,
+         rollover ? " (new broker day)" : "");
    return true;
 }
 
@@ -176,18 +200,20 @@ int OnInit()
       return INIT_FAILED;
    }
 
-   if(RequireConnectedAccount &&
-      (!TerminalInfoInteger(TERMINAL_CONNECTED) ||
-       StringLen(AccountInfoString(ACCOUNT_SERVER)) == 0))
+   if(RequireConnectedAccount && StringLen(AccountInfoString(ACCOUNT_SERVER)) == 0)
    {
       Print("MT4 Tick Lab: connect this terminal to the broker before attaching the collector.");
       return INIT_FAILED;
    }
 
    g_terminal_id = LastPathPart(TerminalInfoString(TERMINAL_DATA_PATH));
+   // GetTickCount() alone can repeat across restarts, which would merge two sessions
+   // that both restart g_sequence at 1. Mix in per-call state so a session id is unique.
    g_session_id = DateKey(TimeGMT()) + "_" +
                   IntegerToString((int)TimeLocal()) + "_" +
-                  IntegerToString((int)GetTickCount());
+                  IntegerToString((int)GetTickCount()) + "_" +
+                  IntegerToString((int)GetMicrosecondCount()) + "_" +
+                  IntegerToString((int)MathRand());
 
    string company = SafeName(AccountInfoString(ACCOUNT_COMPANY));
    string server = SafeName(AccountInfoString(ACCOUNT_SERVER));
@@ -200,8 +226,11 @@ int OnInit()
                  "\\" + account + "\\" + g_terminal_id + "\\" + symbol;
 
    if(!OpenTickFile(TimeGMT())) return INIT_FAILED;
-   EventSetTimer(1);
+   g_last_heartbeat = TimeGMT();
+   EventSetTimer(5);
    IndicatorShortName("MT4 Tick Collector [" + _Symbol + "]");
+   Print("MT4 Tick Lab: collector ", "v1.200", " attached to ", _Symbol,
+         " session=", g_session_id);
    return INIT_SUCCEEDED;
 }
 
@@ -218,10 +247,52 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
-   if(g_file != INVALID_HANDLE && g_unflushed > 0)
+   if(g_file == INVALID_HANDLE)
+   {
+      datetime now = TimeGMT();
+      // A transient lock, a full disk or an antivirus handle must not end collection
+      // for the rest of the session. Retry, but not on every timer beat.
+      if(now - g_last_open_attempt >= 15)
+      {
+         g_last_open_attempt = now;
+         g_reopen_attempts++;
+         OpenTickFile(now);
+      }
+      return;
+   }
+
+   if(g_unflushed > 0)
    {
       FileFlush(g_file);
       g_unflushed = 0;
+   }
+
+   // Liveness marker so a stalled collector is visible without parsing tick files.
+   datetime now = TimeGMT();
+   if(now - g_last_heartbeat >= 60)
+   {
+      g_last_heartbeat = now;
+      string root = SafeName(OutputRoot);
+      FolderCreate(root, UseCommonFilesFolder ? FILE_COMMON : 0);
+      int common = UseCommonFilesFolder ? FILE_COMMON : 0;
+      string path = root + "\\status_" + g_terminal_id + "_" + SafeName(_Symbol) + ".csv";
+      int handle = FileOpen(path, FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_SHARE_READ, ',', common);
+      if(handle != INVALID_HANDLE)
+      {
+         FileWrite(handle, "key", "value");
+         FileWrite(handle, "collector_version", "1.200");
+         FileWrite(handle, "session_id", g_session_id);
+         FileWrite(handle, "symbol", _Symbol);
+         FileWrite(handle, "broker_server", AccountInfoString(ACCOUNT_SERVER));
+         FileWrite(handle, "connected", TerminalInfoInteger(TERMINAL_CONNECTED) ? "true" : "false");
+         FileWrite(handle, "sequence", IntegerToString((long)g_sequence));
+         FileWrite(handle, "open_failures", IntegerToString(g_open_failures));
+         FileWrite(handle, "reopen_attempts", IntegerToString(g_reopen_attempts));
+         FileWrite(handle, "broker_time", IsoTime(TimeCurrent()));
+         FileWrite(handle, "heartbeat_utc", IsoTime(now) + "Z");
+         FileFlush(handle);
+         FileClose(handle);
+      }
    }
 }
 
@@ -256,11 +327,13 @@ int OnCalculate(const int rates_total,
    double market_ask = MarketInfo(_Symbol, MODE_ASK);
    bool market_valid = (market_bid > 0.0 && market_ask >= market_bid);
    bool raw_valid = (tick.bid > 0.0 && tick.ask >= tick.bid);
+   if(!market_valid && !raw_valid) return rates_total;
 
+   // Both quote sources are always written; the selection policy stays data-driven in
+   // Python so a stale MarketInfo snapshot can be detected later instead of discarded.
    double selected_bid = market_valid ? market_bid : tick.bid;
    double selected_ask = market_valid ? market_ask : tick.ask;
    string quote_source = market_valid ? "market_info" : "mql_tick";
-   if(!market_valid && !raw_valid) return rates_total;
 
    double spread_points = point > 0.0
                           ? (selected_ask - selected_bid) / point
@@ -279,10 +352,10 @@ int OnCalculate(const int rates_total,
              DoubleToString(tick.last, digits),
              (long)tick.volume,
              DoubleToString(spread_points, 2),
-             DoubleToString(tick.bid, digits),
-             DoubleToString(tick.ask, digits),
-             DoubleToString(market_bid, digits),
-             DoubleToString(market_ask, digits),
+             raw_valid ? DoubleToString(tick.bid, digits) : "",
+             raw_valid ? DoubleToString(tick.ask, digits) : "",
+             market_valid ? DoubleToString(market_bid, digits) : "",
+             market_valid ? DoubleToString(market_ask, digits) : "",
              quote_source);
 
    g_unflushed++;
