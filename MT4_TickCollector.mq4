@@ -19,6 +19,7 @@ string g_base_path;
 ulong  g_sequence = 0;
 int    g_unflushed = 0;
 bool   g_skip_initial_snapshot = true;
+bool   g_identity_ready = false;
 long   g_open_failures = 0;
 long   g_reopen_attempts = 0;
 datetime g_last_open_attempt = 0;
@@ -138,7 +139,7 @@ void WriteMetadata(string folder, bool append_rollover_row = false)
    FileWrite(handle, "volume_min", DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN), 4));
    FileWrite(handle, "volume_step", DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP), 4));
    FileWrite(handle, "volume_max", DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX), 4));
-   FileWrite(handle, "collector_version", "1.200");
+   FileWrite(handle, "collector_version", "1.210");
    FileWrite(handle, "price_policy", "record_both_marketinfo_primary");
    FileWrite(handle, "broker_time_zone", "broker_server_time_unmarked");
    FileWrite(handle, "collector_started_utc", IsoTime(TimeGMT()) + "Z");
@@ -192,7 +193,41 @@ bool OpenTickFile(datetime received_utc)
    return true;
 }
 
-int OnInit()
+bool InitializeIdentity()
+{
+   if(g_identity_ready) return true;
+
+   string company_raw = AccountInfoString(ACCOUNT_COMPANY);
+   string server_raw = AccountInfoString(ACCOUNT_SERVER);
+   if(StringLen(company_raw) == 0 || StringLen(server_raw) == 0)
+   {
+      Print("MT4 Tick Lab: waiting for broker identity before opening a session file.");
+      return false;
+   }
+
+   string company = SafeName(company_raw);
+   string server = SafeName(server_raw);
+   string symbol = SafeName(_Symbol);
+   string account = IncludeAccountLogin
+                    ? SafeName(IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)))
+                    : "account_redacted";
+
+   g_session_id = DateKey(TimeGMT()) + "_" +
+                  IntegerToString((int)TimeLocal()) + "_" +
+                  IntegerToString((int)GetTickCount()) + "_" +
+                  IntegerToString((int)GetMicrosecondCount()) + "_" +
+                  IntegerToString((int)MathRand());
+   g_base_path = SafeName(OutputRoot) + "\\" + company + "\\" + server +
+                 "\\" + account + "\\" + g_terminal_id + "\\" + symbol;
+
+   if(!OpenTickFile(TimeGMT())) return false;
+   g_identity_ready = true;
+   g_last_heartbeat = TimeGMT();
+   Print("MT4 Tick Lab: collector ", "v1.210", " attached to ", _Symbol,
+         " server=", server_raw, " session=", g_session_id);
+   return true;
+}
+
 {
    if(MQLInfoInteger(MQL_TESTER))
    {
@@ -207,30 +242,10 @@ int OnInit()
    }
 
    g_terminal_id = LastPathPart(TerminalInfoString(TERMINAL_DATA_PATH));
-   // GetTickCount() alone can repeat across restarts, which would merge two sessions
-   // that both restart g_sequence at 1. Mix in per-call state so a session id is unique.
-   g_session_id = DateKey(TimeGMT()) + "_" +
-                  IntegerToString((int)TimeLocal()) + "_" +
-                  IntegerToString((int)GetTickCount()) + "_" +
-                  IntegerToString((int)GetMicrosecondCount()) + "_" +
-                  IntegerToString((int)MathRand());
-
-   string company = SafeName(AccountInfoString(ACCOUNT_COMPANY));
-   string server = SafeName(AccountInfoString(ACCOUNT_SERVER));
-   string symbol = SafeName(_Symbol);
-   string account = IncludeAccountLogin
-                    ? SafeName(IntegerToString((int)AccountInfoInteger(ACCOUNT_LOGIN)))
-                    : "account_redacted";
-
-   g_base_path = SafeName(OutputRoot) + "\\" + company + "\\" + server +
-                 "\\" + account + "\\" + g_terminal_id + "\\" + symbol;
-
-   if(!OpenTickFile(TimeGMT())) return INIT_FAILED;
-   g_last_heartbeat = TimeGMT();
    EventSetTimer(5);
    IndicatorShortName("MT4 Tick Collector [" + _Symbol + "]");
-   Print("MT4 Tick Lab: collector ", "v1.200", " attached to ", _Symbol,
-         " session=", g_session_id);
+   if(!InitializeIdentity())
+      Print("MT4 Tick Lab: attached while waiting for a complete broker connection; no CSV is opened yet.");
    return INIT_SUCCEEDED;
 }
 
@@ -247,9 +262,20 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
+   datetime now = TimeGMT();
+   if(!g_identity_ready)
+   {
+      if(now - g_last_open_attempt >= 15)
+      {
+         g_last_open_attempt = now;
+         g_reopen_attempts++;
+         InitializeIdentity();
+      }
+      return;
+   }
+
    if(g_file == INVALID_HANDLE)
    {
-      datetime now = TimeGMT();
       // A transient lock, a full disk or an antivirus handle must not end collection
       // for the rest of the session. Retry, but not on every timer beat.
       if(now - g_last_open_attempt >= 15)
@@ -267,8 +293,6 @@ void OnTimer()
       g_unflushed = 0;
    }
 
-   // Liveness marker so a stalled collector is visible without parsing tick files.
-   datetime now = TimeGMT();
    if(now - g_last_heartbeat >= 60)
    {
       g_last_heartbeat = now;
@@ -280,7 +304,7 @@ void OnTimer()
       if(handle != INVALID_HANDLE)
       {
          FileWrite(handle, "key", "value");
-         FileWrite(handle, "collector_version", "1.200");
+         FileWrite(handle, "collector_version", "1.210");
          FileWrite(handle, "session_id", g_session_id);
          FileWrite(handle, "symbol", _Symbol);
          FileWrite(handle, "broker_server", AccountInfoString(ACCOUNT_SERVER));
@@ -312,6 +336,9 @@ int OnCalculate(const int rates_total,
       g_skip_initial_snapshot = false;
       return rates_total;
    }
+
+   if(!g_identity_ready && !InitializeIdentity())
+      return rates_total;
 
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol, tick) || g_file == INVALID_HANDLE)

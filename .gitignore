@@ -1,7 +1,11 @@
-﻿data/
+data/
 datasets/
 bars/
 hst/
+output/
+backtests/
+incoming/
+reference/
 reports/
 inventory/
 *.csv
