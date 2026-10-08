@@ -31,32 +31,49 @@ function Required([string]$p, [string]$label) {
     if (-not $p -or -not (Test-Path -LiteralPath $p)) { Fail "$label not found: $p" }
     (Resolve-Path -LiteralPath $p).Path
 }
-function Find-NewestSession([string]$root) {
-    $tick = @(Get-ChildItem $root -Recurse -File -Filter 'ticks_*.csv' |
+function Find-CompatibleSessions([string]$root, [string]$wantedSymbol) {
+    $tickFiles = @(Get-ChildItem $root -Recurse -File -Filter 'ticks_*.csv' |
         Where-Object { $_.Length -gt 200 } | Sort-Object LastWriteTime -Descending)
-    if ($tick.Count -eq 0) { Fail 'No non-empty ticks_*.csv was found.' }
-    foreach ($t in $tick) {
-        $head = @(Get-Content -LiteralPath $t.FullName -TotalCount 2)
+    if ($tickFiles.Count -eq 0) { Fail 'No non-empty ticks_*.csv was found.' }
+
+    $metadataFiles = @(Get-ChildItem $root -Recurse -File -Filter 'metadata_*.csv')
+    $candidates = @()
+    foreach ($tick in $tickFiles) {
+        $head = @(Get-Content -LiteralPath $tick.FullName -TotalCount 2)
         if ($head.Count -lt 2) { continue }
         $parts = $head[1].Split(',')
         if ($parts.Count -lt 2) { continue }
-        $session = $parts[1]
-        $meta = @(Get-ChildItem $root -Recurse -File -Filter 'metadata_*.csv' |
-            Where-Object { (Get-Content -LiteralPath $_.FullName -Raw) -match "(?m)^session_id,$([regex]::Escape($session))\s*$" }) |
+        $sessionId = $parts[1]
+        $meta = $metadataFiles |
+            Where-Object { (Get-Content -LiteralPath $_.FullName -Raw) -match "(?m)^session_id,$([regex]::Escape($sessionId))\s*$" } |
             Select-Object -First 1
-        if ($meta) {
-            $metaValues = @{}
-            Import-Csv -LiteralPath $meta.FullName | ForEach-Object { $metaValues[$_.key] = $_.value }
-            if (-not $metaValues['broker_company'] -or -not $metaValues['broker_server'] -or
-                -not $metaValues['terminal_id'] -or -not $metaValues['symbol']) {
-                Warn "Skipping session with incomplete broker identity: $session"
-                continue
-            }
-            return @{ Tick = $t; Metadata = $meta; Session = $session }
+        if (-not $meta) { continue }
+        $values = @{}
+        Import-Csv -LiteralPath $meta.FullName | ForEach-Object { $values[$_.key] = $_.value }
+        if (-not $values['broker_company'] -or -not $values['broker_server'] -or
+            -not $values['terminal_id'] -or -not $values['symbol'] -or
+            ($wantedSymbol -and $values['symbol'] -ne $wantedSymbol)) {
+            Warn "Skipping session with incomplete or unwanted identity: $sessionId"
+            continue
         }
+        $candidates += [pscustomobject]@{ Tick = $tick; Metadata = $meta; Session = $sessionId; Values = $values }
     }
-    Fail 'A non-empty tick file was found, but matching metadata was not found.'
+    if ($candidates.Count -eq 0) { Fail 'No non-empty session with complete broker identity was found.' }
+
+    $anchor = $candidates[0].Values
+    $selected = @($candidates | Where-Object {
+        $_.Values['broker_company'] -eq $anchor['broker_company'] -and
+        $_.Values['broker_server'] -eq $anchor['broker_server'] -and
+        $_.Values['terminal_id'] -eq $anchor['terminal_id'] -and
+        $_.Values['symbol'] -eq $anchor['symbol'] -and
+        $_.Values['terminal_build'] -eq $anchor['terminal_build']
+    })
+    if ($selected.Count -gt 1) {
+        Info "Combining $($selected.Count) compatible sessions for one backtest package."
+    }
+    return $selected
 }
+
 function DateRange([string]$barsRoot) {
     $dates = @(Get-ChildItem $barsRoot -Recurse -File -Filter 'bars_M1_*.csv' |
         ForEach-Object { if ($_.Name -match 'bars_M1_(\d{8})\.csv') { $Matches[1] } } |
@@ -76,18 +93,21 @@ if (-not $SourceSymbol) { $SourceSymbol = 'XAUUSD' }
 if (-not $TesterSymbol) { $TesterSymbol = $SourceSymbol }
 New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
 
-$session = Find-NewestSession $input
-$stage = Join-Path $OutputRoot ("staging_" + $session.Session)
+$sessions = @(Find-CompatibleSessions $input $SourceSymbol)
+$bundleId = $sessions[0].Session + "_bundle_" + $sessions.Count
+$stage = Join-Path $OutputRoot ("staging_" + $bundleId)
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Path $stage | Out-Null
-Copy-Item $session.Tick.FullName (Join-Path $stage $session.Tick.Name)
-Copy-Item $session.Metadata.FullName (Join-Path $stage $session.Metadata.Name)
-Info "Selected session $($session.Session)"
-Info "Tick file: $($session.Tick.Name)"
+foreach ($session in $sessions) {
+    Copy-Item $session.Tick.FullName (Join-Path $stage $session.Tick.Name)
+    Copy-Item $session.Metadata.FullName (Join-Path $stage $session.Metadata.Name)
+}
+Info "Selected $($sessions.Count) compatible session(s)"
+Info "Tick files: $($sessions.Count) (one or more per session)"
 
 $report = Join-Path $OutputRoot 'reports'
 New-Item -ItemType Directory -Path $report -Force | Out-Null
-Run-Python @((Join-Path $Project 'validate_ticks.py'), $stage, '--json', (Join-Path $report "$($session.Session).validation.json"))
+Run-Python @((Join-Path $Project 'validate_ticks.py'), $stage, '--json', (Join-Path $report "$bundleId.validation.json"))
 
 $datasets = Join-Path $stage 'datasets'
 $bars = Join-Path $stage 'bars'
@@ -139,7 +159,7 @@ $manifest = [ordered]@{
     source_symbol = $SourceSymbol
     date_start = $range.Start
     date_end = $range.End
-    session_id = $session.Session
+    session_ids = @($sessions | ForEach-Object { $_.Session })
     output = $stage
     offline_terminal = $offline
     hst_files = @($hstFiles | ForEach-Object { $_.Name })
